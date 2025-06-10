@@ -1,7 +1,8 @@
 (import sys
         logging
         uuid [uuid4]
-        threading [Lock])
+        threading [Lock]
+        asyncio)
 (import HyREPL.bencode [encode])
 (import HyREPL.ops.utils [find-op])
 (import hyrule [assoc])
@@ -25,6 +26,7 @@
     (setv self.lock (Lock))
     (setv self.module module)
     (setv self.locals module.__dict__)
+    (setv self.loop None)
     None)
 
   (defn __str__ [self]
@@ -38,8 +40,15 @@
     (unless (in "session" msg)
       (assoc msg "session" self.uuid))
     (logging.info "out: %s" msg)
+    (setv data (encode msg))
     (try
-      (.sendall transport (encode msg))
+      (if (hasattr transport "write")
+          (do
+            (setv loop (or self.loop (asyncio.get-event-loop)))
+            (.call-soon-threadsafe loop (fn [] (.write transport data)))
+            (.call-soon-threadsafe loop (fn [] (asyncio.create_task (.drain transport))))
+            )
+          (.sendall transport data))
       (except [e OSError]
         (print (.format "Client gone: {}" e) :file sys.stderr)
         (setv self.status "client_gone"))))
