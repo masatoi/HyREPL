@@ -5,7 +5,8 @@
         subprocess
         time
         uuid [uuid4]
-        hyrule [assoc])
+        hyrule [assoc]
+        threading)
 (import HyREPL.bencode [encode decode])
 (require hyrule [unless])
 
@@ -339,3 +340,50 @@
             done-msg (nrepl-client.receive)]
         (assert (= (get value-msg "value") "\"HyREPL\""))
         (assert (= (get done-msg "status") ["done"]))))))
+
+
+
+(defn test-multiple-clients-concurrent-eval [hyrepl-server]
+  (let [host (get hyrepl-server "host")
+        port (get hyrepl-server "port")
+        base-sock (get hyrepl-server "socket")
+        results {}]
+
+    (setv run-client
+          (fn [code key sock]
+            (with [client (NreplClient host port sock)]
+              (client.send "clone" :params {} :msg-id (str (uuid4)))
+              (let [clone-res (client.receive)
+                    session-id (get clone-res "new-session")
+                    msg-id (str (uuid4))]
+                (client.send "eval"
+                             :params {"code" code "session" session-id}
+                             :msg-id msg-id)
+                (let [resp1 (client.receive)
+                      resp2 (client.receive)
+                      value-msg (if (get resp1 "value") resp1 resp2)
+                      done-msg (if (get resp1 "value") resp2 resp1)]
+                  (assoc results key {"session" session-id
+                                      "value" (get value-msg "value")})
+                  (assert (= (get done-msg "status") ["done"])))))))
+
+    (let [sock2 (socket.create-connection #(host port)
+                                         :timeout SERVER-STARTUP-TIMEOUT)
+          t1 (threading.Thread :target run-client
+                               :args ["(+ 1 2)" "c1" base-sock])
+          t2 (threading.Thread :target run-client
+                               :args ["(* 3 4)" "c2" sock2])]
+      (.start t1)
+      (.start t2)
+      (.join t1)
+      (.join t2)
+      (sock2.close))
+
+    (let [res1 (get results "c1")
+          res2 (get results "c2")]
+      (assert res1)
+      (assert res2)
+      (assert (!= (get res1 "session") (get res2 "session")))
+      (assert (= (get res1 "value") "3"))
+      (assert (= (get res2 "value") "12"))
+    )))
